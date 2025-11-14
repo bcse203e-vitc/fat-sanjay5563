@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Parking Charges - Process yesterday.csv</title>
+  <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:24px}
+    input,button{font-size:1rem}
+    table{border-collapse:collapse;width:100%;margin-top:12px}
+    th,td{border:1px solid #ddd;padding:6px;text-align:left}
+    th{background:#f2f2f2}
+    .stat{margin-top:12px}
+    .error{color:#b00020}
+  </style>
+</head>
+<body>
+  <h2>Parking Charges — Upload yesterday.csv</h2>
+  <p>CSV rows must be: <code>customer_id,entry_timestamp,exit_timestamp</code> (ISO 8601)</p>
+  <input id="fileInput" type="file" accept="text/csv" />
+  <button id="processBtn">Process</button>
+  <a id="downloadLink" style="display:none;margin-left:12px">Download charges_report.csv</a>
+  <div id="output"></div>
+
+  <script>
+    function calculate_charges(duration_hours) {
+      if (!(typeof duration_hours === 'number') || isNaN(duration_hours) || duration_hours <= 0) return { fee: 0, error: true };
+      const hours = Math.ceil(duration_hours);
+      if (hours > 72) return { fee: 0, error: true };
+      const fullDays = Math.floor(hours / 24);
+      const rem = hours % 24;
+      let fee = fullDays * 10;
+      if (rem > 0) {
+        let remCharge = 0;
+        if (rem <= 3) remCharge = 2;
+        else remCharge = 2 + Math.ceil(rem - 3) * 0.5;
+        if (remCharge > 10) remCharge = 10;
+        fee += remCharge;
+      }
+      return { fee: Number(fee.toFixed(2)), error: false };
+    }
+
+    function parseCSV(text) {
+      const lines = text.split(/\r?\n/);
+      return lines.map(l => l.trim()).filter(l => l.length > 0 && l.split(',').length >= 3).map(l => l.split(',').map(s => s.trim()));
+    }
+
+    function makeCSV(rows) {
+      const header = ['customer_id','duration_hours','charge','error_flag'];
+      const lines = [header.join(',')];
+      rows.forEach(r => {
+        lines.push([r.customer_id, r.duration_hours, r.charge.toFixed(2), r.error_flag ? 'TRUE' : 'FALSE'].join(','));
+      });
+      return lines.join('\n');
+    }
+
+    $(function(){
+      $('#processBtn').on('click', function(){
+        const file = $('#fileInput')[0].files[0];
+        if (!file) { alert('Please choose yesterday.csv first'); return; }
+        const reader = new FileReader();
+        reader.onload = function(e){
+          const csv = e.target.result;
+          const parsed = parseCSV(csv);
+          const rowsOut = [];
+          parsed.forEach(cols => {
+            const id = cols[0];
+            const entry = cols[1];
+            const exit = cols[2];
+            let error = false;
+            const t1 = new Date(entry);
+            const t2 = new Date(exit);
+            if (isNaN(t1) || isNaN(t2) || t2 <= t1) {
+              rowsOut.push({ customer_id: id, duration_hours: 0, charge: 0, error_flag: true });
+              return;
+            }
+            const diff = (t2 - t1) / (1000 * 60 * 60);
+            const hoursCeil = Math.ceil(diff);
+            const res = calculate_charges(diff);
+            rowsOut.push({ customer_id: id, duration_hours: hoursCeil, charge: res.fee, error_flag: res.error });
+          });
+
+          const goodRows = rowsOut.filter(r => !r.error_flag);
+          const totalReceipts = goodRows.reduce((s,r)=>s + r.charge,0);
+          const numDailyMax = goodRows.filter(r => Math.abs(r.charge - 10.00) < 0.001).length;
+          const avgCharge = goodRows.length ? totalReceipts / goodRows.length : 0;
+          const maxDuration = rowsOut.length ? Math.max(...rowsOut.map(r=>r.duration_hours)) : 0;
+          const longestIds = rowsOut.filter(r=>r.duration_hours === maxDuration).map(r=>r.customer_id);
+
+          let html = '';
+          html += '<table><thead><tr><th>customer_id</th><th>duration_hours</th><th>charge</th><th>error_flag</th></tr></thead><tbody>';
+          rowsOut.forEach(r => {
+            html += '<tr>' +
+                    '<td>' + $('<div>').text(r.customer_id).html() + '</td>' +
+                    '<td>' + r.duration_hours + '</td>' +
+                    '<td>' + r.charge.toFixed(2) + '</td>' +
+                    '<td>' + (r.error_flag ? '<span class="error">TRUE</span>' : 'FALSE') + '</td>' +
+                    '</tr>';
+          });
+          html += '</tbody></table>';
+
+          html += '<div class="stat">Total receipts: $' + totalReceipts.toFixed(2) + '</div>';
+          html += '<div class="stat">Customers charged daily maximum ($10): ' + numDailyMax + '</div>';
+          html += '<div class="stat">Average charge: $' + avgCharge.toFixed(2) + '</div>';
+          html += '<div class="stat">Longest stay duration (hours): ' + maxDuration + '</div>';
+          html += '<div class="stat">Customer id(s) of longest stay(s): ' + (longestIds.length ? longestIds.join(', ') : 'N/A') + '</div>';
+
+          $('#output').html(html);
+
+          const outCSV = makeCSV(rowsOut);
+          const blob = new Blob([outCSV], {type: 'text/csv'});
+          const url = URL.createObjectURL(blob);
+          $('#downloadLink').attr('href', url).attr('download','charges_report.csv').show().text('Download charges_report.csv');
+        };
+        reader.readAsText(file);
+      });
+    });
+  </script>
+</body>
+</html>
